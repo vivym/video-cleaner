@@ -61,7 +61,7 @@ class RAFT(nn.Module):
     def init_flow(self, frame1: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         bsz, _, h, w = frame1.shape
 
-        coords0 = compute_grid_coords(h // 8, w // 8, frame1.dtype, frame1.device)
+        coords0: torch.Tensor = compute_grid_coords(h // 8, w // 8, frame1.dtype, frame1.device)
         coords0 = coords0.expand(bsz, -1, -1, -1)
         coords1 = coords0.clone()
 

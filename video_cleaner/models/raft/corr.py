@@ -61,7 +61,7 @@ class CorrBlock:
         # bsz, 2, h, w -> bsz, h, w, 2
         coords = coords.permute(0, 2, 3, 1)
         bsz, h0, w0, _ = coords.shape
-        coords = coords.view(bsz * h0 * w0, 1, 1, 2)
+        coords = coords.reshape(bsz * h0 * w0, 1, 1, 2)
 
         delta = compute_delta(self.radius, coords.dtype, coords.device)
         delta = delta.view(1, 2 * self.radius + 1, 2 * self.radius + 1, 2)

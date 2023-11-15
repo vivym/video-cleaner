@@ -177,6 +177,12 @@ def forward_backward_consistency_check(
     return fb_valid_fw
 
 
+def to_binary_mask(mask: torch.Tensor, threshold: float = 0.1):
+    mask[mask > threshold] = 1.0
+    mask[mask <= threshold] = 0.0
+    return mask
+
+
 class BidirectionalPropagation(nn.Module):
     def __init__(
         self,
@@ -186,27 +192,29 @@ class BidirectionalPropagation(nn.Module):
     ):
         super().__init__()
 
+        self.learnable = learnable
         self.interpolation = interpolation
 
         self.deform_align = nn.ModuleDict()
         self.backbone = nn.ModuleDict()
 
-        for mod_name in ["backward_1", "forward_1"]:
-            self.deform_align[mod_name] = SecondOrderDeformableAlignment(
-                num_channels, num_channels, kernel_size=3, padding=1, deform_groups=16
-            )
+        if learnable:
+            for mod_name in ["backward_1", "forward_1"]:
+                self.deform_align[mod_name] = SecondOrderDeformableAlignment(
+                    num_channels, num_channels, kernel_size=3, padding=1, deform_groups=16
+                )
 
-            self.backbone[mod_name] = nn.Sequential(
+                self.backbone[mod_name] = nn.Sequential(
+                    nn.Conv2d(2 * num_channels + 2, num_channels, kernel_size=3, stride=1, padding=1),
+                    nn.LeakyReLU(0.2, inplace=True),
+                    nn.Conv2d(num_channels, num_channels, kernel_size=3, stride=1, padding=1),
+                )
+
+            self.fusion = nn.Sequential(
                 nn.Conv2d(2 * num_channels + 2, num_channels, kernel_size=3, stride=1, padding=1),
                 nn.LeakyReLU(0.2, inplace=True),
                 nn.Conv2d(num_channels, num_channels, kernel_size=3, stride=1, padding=1),
             )
-
-        self.fusion = nn.Sequential(
-            nn.Conv2d(2 * num_channels + 2, num_channels, kernel_size=3, stride=1, padding=1),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(num_channels, num_channels, kernel_size=3, stride=1, padding=1),
-        )
 
     def forward(
         self,
@@ -253,18 +261,29 @@ class BidirectionalPropagation(nn.Module):
                     flow_prop = flows_for_prop[:, flow_indices[i], :, :, :]
                     flow_check = flows_for_check[:, flow_indices[i], :, :, :]
                     flow_vaild_mask = forward_backward_consistency_check(flow_prop, flow_check)
+                    flow_prop_t = flow_prop.permute(0, 2, 3, 1)
                     feat_warped = flow_warp(
                         feat_prop,
-                        flows=flow_prop.permute(0, 2, 3, 1),
+                        flows=flow_prop_t,
                         interpolation=self.interpolation,
                     )
 
-                    cond = torch.cat([feat_current, feat_warped, flow_prop, flow_vaild_mask, mask_current], dim=1)
-                    feat_prop = self.deform_align[mod_name](feat_prop, cond, flow_prop)
-                    mask_prop = mask_current
+                    if self.learnable:
+                        cond = torch.cat([feat_current, feat_warped, flow_prop, flow_vaild_mask, mask_current], dim=1)
+                        feat_prop = self.deform_align[mod_name](feat_prop, cond, flow_prop)
+                        mask_prop = mask_current
+                    else:
+                        mask_prop_valid = flow_warp(mask_prop, flow_prop_t, interpolation=self.interpolation)
+                        mask_prop_valid = to_binary_mask(mask_prop_valid)
 
-                feat = torch.cat([feat_current, feat_prop, mask_current], dim=1)
-                feat_prop = feat_prop + self.backbone[mod_name](feat)
+                        union_vaild_mask = to_binary_mask(mask_current * flow_vaild_mask * (1 - mask_prop_valid))
+                        feat_prop = union_vaild_mask * feat_warped + (1 - union_vaild_mask) * feat_current
+                        # update mask
+                        mask_prop = to_binary_mask(mask_current * (1 - (flow_vaild_mask * (1 - mask_prop_valid))))
+
+                if self.learnable:
+                    feat = torch.cat([feat_current, feat_prop, mask_current], dim=1)
+                    feat_prop = feat_prop + self.backbone[mod_name](feat)
 
                 feats[mod_name].append(feat_prop)
                 masks[mod_name].append(mask_prop)
@@ -276,9 +295,12 @@ class BidirectionalPropagation(nn.Module):
         outputs_b = torch.stack(feats["backward_1"], dim=1)
         outputs_f = torch.stack(feats["forward_1"], dim=1)
 
-        outputs = torch.cat([outputs_b, outputs_f, input_masks], dim=2)
-        outputs: torch.Tensor = self.fusion(outputs.flatten(0, 1))
-        outputs = outputs.view(bsz, t, *outputs.shape[1:]) + x
+        if self.learnable:
+            outputs = torch.cat([outputs_b, outputs_f, input_masks], dim=2)
+            outputs: torch.Tensor = self.fusion(outputs.flatten(0, 1))
+            outputs = outputs.view(bsz, t, *outputs.shape[1:]) + x
+        else:
+            outputs = outputs_f
 
         return outputs_b, outputs_f, outputs
 
@@ -391,7 +413,7 @@ class InpaintGenerator(nn.Module):
             nn.Conv2d(64, 3, kernel_size=3, padding=1),
         )
 
-        # self.img_prop_module = BidirectionalPropagation(3, learnable=False, interpolation=interpolation)
+        self.img_prop_module = BidirectionalPropagation(3, learnable=False, interpolation=interpolation)
         self.feat_prop_module = BidirectionalPropagation(128, learnable=True, interpolation=interpolation)
 
         self.ss = SoftSplit(128, 512, kernel_size=7, stride=3, padding=3)
@@ -496,3 +518,18 @@ class InpaintGenerator(nn.Module):
         outputs = torch.tanh(outputs).view(bsz, num_local_frames, 3, h0, w0)
 
         return outputs
+
+    def image_propagation(
+        self,
+        masked_frames: torch.Tensor,
+        flows_fwd: torch.Tensor,
+        flows_bwd: torch.Tensor,
+        masks: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        _, _, prop_frames, updated_masks = self.img_prop_module(
+            masked_frames,
+            flows_forward=flows_fwd,
+            flows_backward=flows_bwd,
+            input_masks=masks,
+        )
+        return prop_frames, updated_masks

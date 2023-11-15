@@ -3,11 +3,15 @@ from fractions import Fraction
 
 import av
 import numpy as np
+import torch
 from PIL import Image
 from scipy.ndimage import binary_dilation
 
 
-def read_video(video_path: str | os.PathLike) -> tuple[np.ndarray, Fraction | None]:
+def read_video(
+    video_path: str | os.PathLike,
+    device: torch.device = torch.device("cpu"),
+) -> tuple[np.ndarray, Fraction | None]:
     frames = []
 
     if os.path.isdir(video_path):
@@ -16,8 +20,9 @@ def read_video(video_path: str | os.PathLike) -> tuple[np.ndarray, Fraction | No
         for frame_path in sorted(os.listdir(video_path)):
             if frame_path.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
                 frame_path = os.path.join(video_path, frame_path)
-                frame = np.asarray(Image.open(frame_path).convert("RGB"))
-                frames.append(frame)
+                frame = np.array(Image.open(frame_path).convert("RGB"))
+                frame_tensor = torch.from_numpy(frame).to(device=device, non_blocking=True)
+                frames.append(frame_tensor)
     else:
         with av.open(video_path) as container:
             assert len(container.streams.video) == 1, container.streams.video
@@ -28,14 +33,21 @@ def read_video(video_path: str | os.PathLike) -> tuple[np.ndarray, Fraction | No
 
             for frame in container.decode(stream):
                 frame = np.asarray(frame.to_image())
-                frames.append(frame)
+                frame_tensor = torch.from_numpy(frame).to(device=device, non_blocking=True)
+                frames.append(frame_tensor)
 
-    frames = np.stack(frames, axis=0)
+    frames = torch.stack(frames, dim=0).permute(0, 3, 1, 2)
+    frames = frames.float()
+    frames.div_(255.).mul_(2).sub_(1.0)
 
     return frames, fps
 
 
-def read_masks(mask_path: str | os.PathLike, dilation_iters: int = 8) -> np.ndarray:
+def read_masks(
+    mask_path: str | os.PathLike,
+    dilation_iters: int = 8,
+    device: torch.device = torch.device("cpu"),
+) -> np.ndarray:
     mask_paths = []
     if os.path.isdir(mask_path):
         mask_paths = sorted(filter(lambda p: p.endswith((".jpg", ".jpeg", ".png", ".bmp")), os.listdir(mask_path)))
@@ -46,10 +58,12 @@ def read_masks(mask_path: str | os.PathLike, dilation_iters: int = 8) -> np.ndar
     masks = []
     for mask_path in mask_paths:
         mask_image = Image.open(mask_path).convert("L")
-        mask_array = np.array(mask_image)
-        mask_array = binary_dilation(mask_array, iterations=dilation_iters).astype(np.uint8)
-        masks.append(mask_array)
+        mask_array = np.asarray(mask_image)
+        mask_array = binary_dilation(mask_array, iterations=dilation_iters)
+        mask_tensor = torch.from_numpy(mask_array).to(device, non_blocking=True)
+        masks.append(mask_tensor)
 
-    masks = np.stack(masks, axis=0)
+    masks = torch.stack(masks, dim=0)
+    masks = masks[:, None]
 
     return masks
