@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.ops import deform_conv2d
 
+from .utils import to_pair
+
 
 class P3DBlock(nn.Module):
     def __init__(
@@ -50,16 +52,6 @@ class P3DBlock(nn.Module):
             x += residual
 
         return x
-
-
-def to_pair(x: int | tuple[int, int]) -> tuple[int, int]:
-    if isinstance(x, int):
-        return x, x
-    elif isinstance(x, tuple):
-        assert len(x) == 2
-        return x
-    else:
-        raise TypeError(f"Expected int or tuple[int, int], got {type(x)}")
 
 
 class SecondOrderDeformableAlignment(nn.Module):

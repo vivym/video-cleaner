@@ -5,8 +5,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.ops import deform_conv2d
 
-from .recurrent_flow_completion import Deconv, to_pair
-from .sparse_transformer import TemporalSparseTransformerBlock
+from .recurrent_flow_completion import Deconv
+from .sparse_transformer import TemporalSparseTransformer
+from .utils import to_pair
 
 
 class Encoder(nn.Module):
@@ -395,17 +396,15 @@ class InpaintGenerator(nn.Module):
 
         self.ss = SoftSplit(128, 512, kernel_size=7, stride=3, padding=3)
 
-        self.transformers = TemporalSparseTransformerBlock(
-            dim=512,
-            n_head=4,
+        self.transformers = TemporalSparseTransformer(
+            d_model=512,
+            nhead=4,
             window_size=(5, 9),
             pool_size=(4, 4),
-            depths=8,
-            t2t_params={
-                "kernel_size": (7, 7),
-                "stride": (3, 3),
-                "padding": (3, 3),
-            },
+            t2t_kernel_size=(7, 7),
+            t2t_stride=(3, 3),
+            t2t_padding=(3, 3),
+            num_layers=8,
         )
 
         self.sc = SoftComp(128, 512, kernel_size=7, stride=3, padding=3)
@@ -484,7 +483,10 @@ class InpaintGenerator(nn.Module):
         hidden_states = self.ss(feats)
         # b, t, h, w, c
         hidden_states = self.transformers(
-            hidden_states, output_size, mask_pool_l, t_dilation=self.temporal_dilation
+            hidden_states,
+            fold_size=output_size,
+            masks=mask_pool_l,
+            temporal_dilation=self.temporal_dilation,
         )
         feats = self.sc(hidden_states, output_size=output_size)
 
