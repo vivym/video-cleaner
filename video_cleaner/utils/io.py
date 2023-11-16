@@ -11,7 +11,7 @@ from scipy.ndimage import binary_dilation
 def read_video(
     video_path: str | os.PathLike,
     device: torch.device = torch.device("cpu"),
-) -> tuple[np.ndarray, Fraction | None]:
+) -> tuple[torch.Tensor, Fraction | None]:
     frames = []
 
     if os.path.isdir(video_path):
@@ -32,7 +32,7 @@ def read_video(
             fps = stream.base_rate
 
             for frame in container.decode(stream):
-                frame = np.asarray(frame.to_image())
+                frame = np.array(frame.to_image())
                 frame_tensor = torch.from_numpy(frame).to(device=device, non_blocking=True)
                 frames.append(frame_tensor)
 
@@ -76,7 +76,7 @@ def read_masks(
     mask_path: str | os.PathLike,
     dilation_iters: int = 8,
     device: torch.device = torch.device("cpu"),
-) -> np.ndarray:
+) -> torch.Tensor:
     mask_paths = []
     if os.path.isdir(mask_path):
         mask_paths = sorted(filter(lambda p: p.endswith((".jpg", ".jpeg", ".png", ".bmp")), os.listdir(mask_path)))

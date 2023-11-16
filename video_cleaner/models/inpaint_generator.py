@@ -273,7 +273,7 @@ class BidirectionalPropagation(nn.Module):
                         mask_prop = mask_current
                     else:
                         mask_prop_valid = flow_warp(
-                            mask_prop.to(flow_prop_t.dtype), flow_prop_t
+                            mask_prop.to(flow_prop_t.dtype), flow_prop_t, interpolation=self.interpolation
                         )
                         mask_prop_valid = to_binary_mask(mask_prop_valid)
 
@@ -417,7 +417,7 @@ class InpaintGenerator(nn.Module):
             nn.Conv2d(64, 3, kernel_size=3, padding=1),
         )
 
-        self.img_prop_module = BidirectionalPropagation(3, learnable=False, interpolation="nearest")
+        self.img_prop_module = BidirectionalPropagation(3, learnable=False, interpolation=interpolation)
         self.feat_prop_module = BidirectionalPropagation(128, learnable=True, interpolation=interpolation)
 
         self.ss = SoftSplit(128, 512, kernel_size=7, stride=3, padding=3)
