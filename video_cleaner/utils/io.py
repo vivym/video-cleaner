@@ -43,6 +43,35 @@ def read_video(
     return frames, fps
 
 
+def save_video(
+    frames: torch.Tensor,
+    video_path: str | os.PathLike,
+    fps: int | float | Fraction = 30,
+) -> None:
+    frames = (frames + 1.) * (0.5 * 255.)
+    frames.clamp_(0., 255.)
+    frames = frames.to(torch.uint8)
+    frames = frames.permute(0, 2, 3, 1)
+    frames_np = frames.cpu().numpy()
+
+    height, width = frames.shape[1:3]
+
+    with av.open(video_path, mode="w") as container:
+        stream = container.add_stream("mpeg4", rate=fps)
+        stream.width = width
+        stream.height = height
+        stream.pix_fmt = "yuv420p"
+
+        for frame_np in frames_np:
+            frame = av.VideoFrame.from_ndarray(frame_np, format="rgb24")
+            for packet in stream.encode(frame):
+                container.mux(packet)
+
+        # Flush stream
+        for packet in stream.encode():
+            container.mux(packet)
+
+
 def read_masks(
     mask_path: str | os.PathLike,
     dilation_iters: int = 8,

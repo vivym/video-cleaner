@@ -38,7 +38,11 @@ class FusionFFN(nn.Module):
         x = self.fc1(x)
 
         bsz, n, c = x.shape
-        normalizer = torch.ones(bsz * n // n_vecs, self.kernel_shape, n_vecs)
+        normalizer = torch.ones(
+            bsz * n // n_vecs, self.kernel_shape, n_vecs,
+            dtype=x.dtype,
+            device=x.device,
+        )
         normalizer = F.fold(
             normalizer,
             output_size=output_size,

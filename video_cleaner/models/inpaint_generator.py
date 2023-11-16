@@ -124,7 +124,7 @@ class SecondOrderDeformableAlignment(nn.Module):
 @lru_cache
 @torch.no_grad
 def compute_grid_coords(height: int, width: int, dtype: torch.dtype, device: torch.device):
-    grid_y, grid_x = torch.meshgrid(torch.arange(height), torch.arange(width))
+    grid_y, grid_x = torch.meshgrid(torch.arange(height), torch.arange(width), indexing="ij")
     grid_coords = torch.stack((grid_x, grid_y), dim=2)
     return grid_coords.to(dtype=dtype, device=device)
 
@@ -173,14 +173,13 @@ def forward_backward_consistency_check(
     mag_sq_fw = length_sq(flow_fw) + length_sq(flow_bw_warped)
     occ_thresh_fw = alpha1 * mag_sq_fw + alpha2
 
-    fb_valid_fw = (length_sq(flow_diff_fw) < occ_thresh_fw).to(flow_fw)
-    return fb_valid_fw
+    return length_sq(flow_diff_fw) < occ_thresh_fw
 
 
 def to_binary_mask(mask: torch.Tensor, threshold: float = 0.1):
     mask[mask > threshold] = 1.0
     mask[mask <= threshold] = 0.0
-    return mask
+    return mask.to(torch.bool)
 
 
 class BidirectionalPropagation(nn.Module):
@@ -222,8 +221,8 @@ class BidirectionalPropagation(nn.Module):
         flows_forward: torch.Tensor,
         flows_backward: torch.Tensor,
         input_masks: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        bsz, t, c, h, w = x.shape
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        bsz, t = x.shape[:2]
 
         feats: dict[str, list[torch.Tensor]] = {}
         feats["spatial"] = [x[:, i, ...] for i in range(t)]
@@ -273,13 +272,16 @@ class BidirectionalPropagation(nn.Module):
                         feat_prop = self.deform_align[mod_name](feat_prop, cond, flow_prop)
                         mask_prop = mask_current
                     else:
-                        mask_prop_valid = flow_warp(mask_prop, flow_prop_t, interpolation=self.interpolation)
+                        mask_prop_valid = flow_warp(
+                            mask_prop.to(flow_prop_t.dtype), flow_prop_t
+                        )
                         mask_prop_valid = to_binary_mask(mask_prop_valid)
 
-                        union_vaild_mask = to_binary_mask(mask_current * flow_vaild_mask * (1 - mask_prop_valid))
-                        feat_prop = union_vaild_mask * feat_warped + (1 - union_vaild_mask) * feat_current
+                        union_vaild_mask = mask_current * flow_vaild_mask * (~mask_prop_valid)
+
+                        feat_prop = union_vaild_mask * feat_warped + (~union_vaild_mask) * feat_current
                         # update mask
-                        mask_prop = to_binary_mask(mask_current * (1 - (flow_vaild_mask * (1 - mask_prop_valid))))
+                        mask_prop = mask_current * (~(flow_vaild_mask * (~mask_prop_valid)))
 
                 if self.learnable:
                     feat = torch.cat([feat_current, feat_prop, mask_current], dim=1)
@@ -299,10 +301,12 @@ class BidirectionalPropagation(nn.Module):
             outputs = torch.cat([outputs_b, outputs_f, input_masks], dim=2)
             outputs: torch.Tensor = self.fusion(outputs.flatten(0, 1))
             outputs = outputs.view(bsz, t, *outputs.shape[1:]) + x
+            updated_masks = None
         else:
             outputs = outputs_f
+            updated_masks = torch.stack(masks["forward_1"], dim=1)
 
-        return outputs_b, outputs_f, outputs
+        return outputs_b, outputs_f, outputs, updated_masks
 
 
 class SoftSplit(nn.Module):
@@ -413,7 +417,7 @@ class InpaintGenerator(nn.Module):
             nn.Conv2d(64, 3, kernel_size=3, padding=1),
         )
 
-        self.img_prop_module = BidirectionalPropagation(3, learnable=False, interpolation=interpolation)
+        self.img_prop_module = BidirectionalPropagation(3, learnable=False, interpolation="nearest")
         self.feat_prop_module = BidirectionalPropagation(128, learnable=True, interpolation=interpolation)
 
         self.ss = SoftSplit(128, 512, kernel_size=7, stride=3, padding=3)
@@ -471,21 +475,21 @@ class InpaintGenerator(nn.Module):
         ds_flows_b = ds_flows_b.view(bsz, num_local_frames - 1, 2, h, w) / 4.0
 
         ds_input_masks: torch.Tensor = F.interpolate(
-            input_masks.flatten(0, 1),
+            input_masks.flatten(0, 1).float(),
             scale_factor=1 / 4,
             mode="nearest",
-        )
+        ).bool()
         ds_input_masks = ds_input_masks.view(bsz, t, 1, h, w)
         local_ds_input_masks = ds_input_masks[:, :num_local_frames]
 
         lcoal_ds_updated_masks: torch.Tensor = F.interpolate(
-            updated_masks[:, :num_local_frames].flatten(0, 1),
+            updated_masks[:, :num_local_frames].flatten(0, 1).float(),
             scale_factor=1 / 4,
             mode="nearest",
-        )
+        ).bool()
         lcoal_ds_updated_masks = lcoal_ds_updated_masks.view(bsz, num_local_frames, 1, h, w)
 
-        _, _, local_feats = self.feat_prop_module(
+        _, _, local_feats, _ = self.feat_prop_module(
             local_feats,
             flows_forward=ds_flows_f,
             flows_backward=ds_flows_b,
@@ -493,7 +497,7 @@ class InpaintGenerator(nn.Module):
         )
         feats = torch.cat([local_feats, ref_feats], dim=1)
 
-        mask_pool_l = F.max_pool2d(local_ds_input_masks.flatten(0, 1), kernel_size=7, stride=3, padding=3)
+        mask_pool_l = F.max_pool2d(local_ds_input_masks.flatten(0, 1).to(feats.dtype), kernel_size=7, stride=3, padding=3)
         mask_pool_l = mask_pool_l.view(bsz, num_local_frames, 1, *mask_pool_l.shape[-2:])
         mask_pool_l = mask_pool_l.permute(0, 1, 3, 4, 2)
 

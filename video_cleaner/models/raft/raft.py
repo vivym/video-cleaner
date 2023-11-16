@@ -111,4 +111,4 @@ class RAFT(nn.Module):
             else:
                 flow_up = self.upsample_flow_by_mask(coords1 - coords0, up_mask)
 
-        return coords1 - coords0, flow_up
+        return flow_up
