@@ -63,7 +63,6 @@ class BasicEncoder(nn.Module):
         block_channels: tuple[int, int, int, int] = (64, 64, 96, 128),
         block_strides: tuple[int, int, int] = (1, 2, 2),
         norm_type: str = "batch_norm",
-        dropout_prob: float = 0.0,
     ):
         super().__init__()
 
@@ -106,7 +105,6 @@ class BasicEncoder(nn.Module):
 
         # output convolution
         self.conv2 = nn.Conv2d(block_channels[-1], out_channels, kernel_size=1)
-        self.dropout = nn.Dropout2d(p=dropout_prob)
 
     def _make_stage(
         self,
@@ -128,6 +126,5 @@ class BasicEncoder(nn.Module):
         x = self.layer3(x)
 
         x = self.conv2(x)
-        x = self.dropout(x)
 
         return x

@@ -45,19 +45,30 @@ class CorrBlock:
         fmap2: torch.Tensor,
         num_levels: int = 4,
         radius: int = 4,
+        use_transpose: bool = False
     ):
         self.num_levels = num_levels
         self.radius = radius
 
         corr = compute_all_pairs_correlation(fmap1, fmap2)
-        corr = corr.flatten(0, 2)
 
+        if use_transpose:
+            corr_t = corr.permute(0, 4, 5, 3, 1, 2)
+
+        corr = corr.flatten(0, 2)
         self.corr_pyramid = [corr]
         for _ in range(num_levels - 1):
             corr = F.avg_pool2d(corr, kernel_size=2, stride=2)
             self.corr_pyramid.append(corr)
 
-    def __call__(self, coords: torch.Tensor) -> torch.Tensor:
+        if use_transpose:
+            corr_t = corr_t.flatten(0, 2)
+            self.corr_t_pyramid = [corr_t]
+            for _ in range(num_levels - 1):
+                corr_t = F.avg_pool2d(corr_t, kernel_size=2, stride=2)
+                self.corr_t_pyramid.append(corr_t)
+
+    def __call__(self, coords: torch.Tensor, transpose: bool = False) -> torch.Tensor:
         # bsz, 2, h, w -> bsz, h, w, 2
         coords = coords.permute(0, 2, 3, 1)
         bsz, h0, w0, _ = coords.shape
@@ -66,8 +77,10 @@ class CorrBlock:
         delta = compute_delta(self.radius, coords.dtype, coords.device)
         delta = delta.view(1, 2 * self.radius + 1, 2 * self.radius + 1, 2)
 
+        corr_pyramid = self.corr_pyramid if not transpose else self.corr_t_pyramid
+
         out_pyramid = []
-        for i, corr in enumerate(self.corr_pyramid):
+        for i, corr in enumerate(corr_pyramid):
             centroid_lvl = coords / 2 ** i
             coords_lvl = centroid_lvl + delta
 

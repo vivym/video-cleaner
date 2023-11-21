@@ -58,11 +58,16 @@ class RAFT(nn.Module):
             corr_radius=corr_radius,
         )
 
-    def init_flow(self, frame1: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def init_flow(
+        self, frame1: torch.Tensor, batch_size: int | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         bsz, _, h, w = frame1.shape
 
+        if batch_size is None:
+            batch_size = bsz
+
         coords0: torch.Tensor = compute_grid_coords(h // 8, w // 8, frame1.dtype, frame1.device)
-        coords0 = coords0.expand(bsz, -1, -1, -1)
+        coords0 = coords0.expand(batch_size, -1, -1, -1)
         coords1 = coords0.clone()
 
         return coords0, coords1
@@ -84,11 +89,13 @@ class RAFT(nn.Module):
 
     def forward(
         self, frame1: torch.Tensor, frame2: torch.Tensor, update_iters: int = 12
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         fmap1 = self.fnet(frame1)
         fmap2 = self.fnet(frame2)
 
-        corr_fn = CorrBlock(fmap1, fmap2, radius=self.corr_radius)
+        corr_fn = CorrBlock(
+            fmap1, fmap2, num_levels=self.num_corr_levels, radius=self.corr_radius
+        )
 
         net_inp = self.cnet(frame1)
         net, inp = torch.split(net_inp, [self.hidden_dim, self.context_dim], dim=1)
@@ -102,13 +109,17 @@ class RAFT(nn.Module):
             corr = corr_fn(coords1)
 
             flow = coords1 - coords0
-            net, up_mask, flow_delta = self.update_block(net, inp, corr, flow)
+            net, flow_delta = self.update_block(net, inp, corr, flow)
 
             coords1 = coords1 + flow_delta
 
-            if up_mask is None:
-                flow_up = upflow8(coords1 - coords0)
-            else:
-                flow_up = self.upsample_flow_by_mask(coords1 - coords0, up_mask)
+        # scale mask to balence gradients
+        up_mask: torch.Tensor = .25 * self.update_block.mask(net)
+        flow_up = self.upsample_flow_by_mask(coords1 - coords0, up_mask)
+
+        if up_mask is None:
+            flow_up = upflow8(coords1 - coords0)
+        else:
+            flow_up = self.upsample_flow_by_mask(coords1 - coords0, up_mask)
 
         return flow_up

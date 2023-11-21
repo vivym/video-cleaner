@@ -1,0 +1,15 @@
+FROM nvcr.io/nvidia/pytorch:22.09-py3 as base
+
+ARG USER=user
+ARG UID=1000
+ARG GID=1000
+ARG PW=user
+
+RUN useradd -m ${USER} --uid=${UID} && echo "${USER}:${PW}" | chpasswd
+RUN echo "%sudo ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+USER ${UID}:${GID}
+
+ENV PATH="/home/${USER}/.local/bin:$PATH"
+
+WORKDIR /project
